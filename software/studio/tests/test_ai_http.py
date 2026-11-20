@@ -132,6 +132,58 @@ class AiHttp(unittest.IsolatedAsyncioTestCase):
             self.assertIn(status,(400,404,413))
             self.assertFalse(result['ok'])
 
+    async def test_camera_is_authorized_for_one_turn_and_checks_revision_before_upload(self):
+        item=(await self.save())['connections'][0]
+        body={'op':'chat','id':item['id'],'revision':item['revision'],'messages':[{'role':'user','content':'look'}]}
+        call={'function':{'name':'duck_camera','arguments':'{}'}}
+        with mock.patch('studio.ai_client.CompatibleClient.complete',return_value='hello') as model, \
+             mock.patch('studio.camera_capture.capture') as capture:
+            status,_,_=await self.call('POST','/api/ai',body,self.headers)
+            self.assertEqual(status,200)
+            self.assertNotIn('tools',model.call_args.kwargs)
+            capture.assert_not_called()
+            model.side_effect=[{'text':'looking','tool_calls':[call]},'seen']
+            capture.return_value='data:image/png;base64,TEST'
+            status,_,result=await self.call('POST','/api/ai',{**body,'allow_camera':True},self.headers)
+            self.assertEqual(status,200,result)
+            self.assertEqual(result['text'],'seen')
+            self.assertEqual(model.call_args.kwargs['camera_image'],capture.return_value)
+            self.assertEqual(capture.call_count,1)
+            status,_,_=await self.call('POST','/api/ai',{**body,'allow_camera':'yes'},self.headers)
+            self.assertEqual(status,400)
+            model.reset_mock();model.side_effect=[{'text':'looking','tool_calls':[call]}]
+            from studio.ai_connections import Connections
+            capture.side_effect=lambda *_:Connections(self.tmp.name).delete(item['id'])
+            status,_,result=await self.call('POST','/api/ai',{**body,'allow_camera':True},self.headers)
+            self.assertEqual((status,result['code']),(409,'stale'))
+            self.assertEqual(model.call_count,1)
+
+    async def test_tts_preview_authorization_and_saved_key_privacy(self):
+        with mock.patch('studio.tts.TtsService.preview', new_callable=mock.AsyncMock,
+                        return_value={'mime':'audio/wav','data':'mock-audio'}) as preview:
+            status,_,_ = await self.call('POST','/api/ai',{'op':'tts_preview'})
+            self.assertEqual(status,401)
+            status,_,_ = await self.call('POST','/api/ai',{'op':'tts_preview'},
+                {k:v for k,v in self.headers.items() if k != 'X-CSRF'})
+            self.assertEqual(status,403)
+            preview.assert_not_called()
+            status,headers,result = await self.call('POST','/api/ai',{'op':'tts_preview'},self.headers)
+            self.assertEqual(status,200)
+            self.assertEqual(headers['cache-control'],'no-store')
+            self.assertEqual(result['audio']['mime'],'audio/wav')
+        settings={'enabled':False,'provider':'volcano','speaker':'custom_voice',
+                  'api_key':'private-tts-key','clear_key':False}
+        with mock.patch('studio.tts.http.client.HTTPSConnection') as network:
+            status,_,result = await self.call('POST','/api/ai',{'op':'tts_save','settings':settings},self.headers)
+            self.assertEqual(status,200)
+            self.assertNotIn('private-tts-key',json.dumps(result))
+            network.assert_not_called()
+        from studio.app import _diag_zip
+        with zipfile.ZipFile(io.BytesIO(_diag_zip(self.log, {}, {}))) as bundle:
+            self.assertFalse(any('tts-settings' in name for name in bundle.namelist()))
+            for name in bundle.namelist():
+                self.assertNotIn(b'private-tts-key',bundle.read(name))
+
 
 if __name__ == '__main__':
     unittest.main()

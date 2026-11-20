@@ -1,0 +1,382 @@
+#!/usr/bin/python3 -IS
+"""Fixed-scope maintenance helper for the four sudo-authorized Studio operations."""
+import datetime
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import zipfile
+from contextlib import contextmanager
+
+
+STATE = Path('/var/lib/microduck-studio')
+ROOT = Path('/opt/microduck/software/current/studio')
+BACKUPS = Path('/var/backups')
+LOCK = Path('/run/microduck-helper/helper.lock')
+HELPER = '/usr/local/sbin/microduck-maintenance'
+CAMERA = 'config/boot/radxa-camera-8m-local.dtbo'
+TOF = 'config/etc/systemd/system/tofd.service.d/60-local-vl53l5cx.conf'
+TOF_TEXT = '[Service]\nExecStart=\nExecStart=/opt/robot/daemon/current/bin/tofd --bus /dev/i2c-3 --address 0x29 --no-imu\n'
+CONFIG = {}
+for path in (
+    '/etc/robot/feetech-ft5/hd1910-calibration.toml', '/etc/robot/feetech-ft5/hd1910-calibration.saved.toml',
+    '/etc/robot/feetech-ft5/robotd.toml', '/etc/robot/robotd.toml', '/var/lib/padd/mappings.json',
+    '/etc/robot/feetech-ft5/pad-settings.json', CAMERA.removeprefix('config'), TOF.removeprefix('config'),
+):
+    CONFIG['config' + path] = Path(path)
+for filename in (
+    'servo-centered.json', 'servo-directions.json', 'imu-pending.json', 'ai-connections.json',
+    'tts-settings.json', 'ai-tools.json', 'battery-settings.json', 'onboarding.json',
+):
+    CONFIG['config' + str(STATE / filename).replace('\\', '/')] = STATE / filename
+MAX = 16 * 1024 * 1024
+CONFIG_LIMIT = 1024 * 1024
+MAX_MEMBERS = 500
+
+
+@contextmanager
+def device_lock():
+    # Share the lock used by bus takeover, calibration and controller maintenance.
+    import fcntl
+    LOCK.parent.mkdir(mode=0o755, exist_ok=True)
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('设备正在维护或校准，请稍后重试') from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def validate_camera(data):
+    directives = [line.split() for line in Path('/boot/extlinux/extlinux.conf').read_text().splitlines()]
+    bases = [v[1] for v in directives if len(v) == 2 and v[0].lower() == 'fdt']
+    overlays = [v[1:] for v in directives if v and v[0].lower() == 'fdtoverlays' and str(CONFIG[CAMERA]) in v[1:]]
+    if len(set(bases)) != 1 or len(overlays) != 1:
+        raise ValueError('无法确认相机设备树所用的启动配置')
+    with tempfile.TemporaryDirectory() as tmp:
+        candidate = Path(tmp) / 'camera.dtbo'
+        candidate.write_bytes(data)
+        inputs = [str(candidate) if item == str(CONFIG[CAMERA]) else item for item in overlays[0]]
+        result = subprocess.run(['fdtoverlay', '-i', bases[0], '-o', str(Path(tmp) / 'merged.dtb'), *inputs],
+                                capture_output=True, timeout=8)
+        if result.returncode:
+            raise ValueError('相机设备树与当前启动配置不兼容')
+
+
+def rpc(method):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.settimeout(3)
+        sock.connect('/run/robotd.sock')
+        sock.sendall((json.dumps({'jsonrpc':'2.0', 'id':1, 'method':method, 'params':{}}) + '\n').encode())
+        with sock.makefile('rb') as stream:
+            reply = json.loads(stream.readline(1024 * 1024))
+    result = reply.get('result') if isinstance(reply, dict) else None
+    if not isinstance(result, dict) or result.get('accepted') is False:
+        raise ValueError('主程序未接受维护请求')
+    return result
+
+
+def off():
+    bus = rpc('robot.busStatus')
+    if not isinstance(bus, dict) or any(bus.get(k) for k in (
+            'torque_off_pending', 'power_pending', 'home_recovery', 'motion', 'policy_enabled', 'policy_motion_enabled')):
+        return False
+    hold = bus.get('hold')
+    if hold and (not isinstance(hold, dict) or hold.get('active') is not False):
+        return False
+    native = bus.get('native') or {}
+    if not isinstance(native, dict) or native.get('torque_state_confirmed') is True:
+        return False
+    if bus.get('mode') == 'commissioning':
+        return bus.get('phase') == 'ready' and bus.get('torque_state') == 'off'
+    if bus.get('mode') == 'motion' and bus.get('phase') == 'control':
+        gains = native.get('hd1910') or {}
+        return (bus.get('policy_enabled') is False and bus.get('torque_state') in (None, 'off')
+                and native.get('torque_state_confirmed') is False and isinstance(gains, dict)
+                and gains.get('restore_pending') is False and gains.get('temporary_gains_applied') is False)
+    return False
+
+
+def require_off():
+    if not off():
+        raise ValueError('请扶稳鸭子并卸力，等待主程序确认后重试')
+
+
+def sync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic(path, data, mode, owner):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.maintenance-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fchown(fd, *owner)
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+        os.replace(temporary, path)
+        sync_dir(path.parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def read_regular(path, limit):
+    # O_NOFOLLOW pins the leaf checked by fstat even in the service user's state directory.
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError('备份文件类型或大小不受支持')
+        data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('备份文件超过大小限制')
+        return data, info
+
+
+def inspect_config(name, data, *, for_restore):
+    if len(data) > CONFIG_LIMIT:
+        raise ValueError('单份配置过大')
+    if name == CAMERA:
+        if len(data) < 40 or data[:4] != b'\xd0\x0d\xfe\xed':
+            raise ValueError('相机设备树格式不正确')
+        if for_restore:
+            validate_camera(data)
+        return
+    if name == TOF:
+        if data.replace(b'\r\n', b'\n') != TOF_TEXT.encode():
+            raise ValueError('ToF 启动配置不是受支持的硬件参数')
+        return
+    try:
+        config = tomllib.loads(data.decode()) if name.endswith('.toml') else json.loads(data)
+    except (ValueError, RecursionError):
+        raise ValueError('备份配置无法解析') from None
+    if not isinstance(config, (dict, list)):
+        raise ValueError('配置格式不正确')
+
+
+def export():
+    files = {}
+    missing = []
+    for name, path in CONFIG.items():
+        try:
+            data, _ = read_regular(path, CONFIG_LIMIT)
+        except FileNotFoundError:
+            missing.append(name)
+            continue
+        inspect_config(name, data, for_restore=False)
+        files[name] = data
+    if not files:
+        raise ValueError('当前设备没有可备份的配置')
+    total = sum(map(len, files.values()))
+    for folder in ('studio', 'web'):
+        for path in (ROOT / folder).rglob('*'):
+            rel = path.relative_to(ROOT)
+            if 'vendor' in rel.parts or '__pycache__' in rel.parts or path.suffix not in ('.py', '.js', '.css', '.html'):
+                continue
+            if path.is_symlink() or not path.is_file() or path.stat().st_size >= 2 * 1024 * 1024:
+                continue
+            data, _ = read_regular(path, 2 * 1024 * 1024)
+            total += len(data)
+            if total > MAX or len(files) >= MAX_MEMBERS - 1:
+                raise ValueError('备份超过大小或成员数量限制')
+            files['source/' + rel.as_posix()] = data
+    manifest = json.dumps({
+        'format': 'microduck-backup/v1', 'created': datetime.datetime.now().astimezone().isoformat(),
+        'hostname': socket.gethostname(), 'missing': missing,
+        'files': {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+    }, ensure_ascii=False).encode()
+    if total + len(manifest) > MAX:
+        raise ValueError('备份超过大小限制')
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('manifest.json', manifest)
+        for name, data in files.items():
+            archive.writestr(name, data)
+    if out.tell() > MAX:
+        raise ValueError('备份超过大小限制')
+    sys.stdout.buffer.write(out.getvalue())
+
+
+def load(data):
+    if len(data) > MAX:
+        raise ValueError('备份文件过大')
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            names = {entry.filename for entry in members}
+            if (len(names) != len(members) or len(names) > MAX_MEMBERS or 'manifest.json' not in names
+                    or sum(entry.file_size for entry in members) > MAX):
+                raise ValueError('备份包结构或解压大小不正确')
+            for name in names:
+                if name.startswith('/') or '..' in PurePosixPath(name).parts or '\\' in name:
+                    raise ValueError('备份路径不正确')
+            manifest = json.loads(archive.read('manifest.json'))
+            expected = manifest.get('files') if isinstance(manifest, dict) else None
+            if (not isinstance(expected, dict) or manifest.get('format') != 'microduck-backup/v1'
+                    or names - {'manifest.json'} != set(expected)):
+                raise ValueError('不是支持的鸭子备份文件')
+            restored = {}
+            for name, digest in expected.items():
+                contents = archive.read(name)
+                if hashlib.sha256(contents).hexdigest() != digest:
+                    raise ValueError('备份校验失败')
+                if name in CONFIG:
+                    inspect_config(name, contents, for_restore=True)
+                    restored[name] = contents
+                elif not name.startswith('source/'):
+                    raise ValueError('备份包含不支持的配置')
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, RecursionError):
+        raise ValueError('备份 ZIP 无法读取') from None
+    if not restored:
+        raise ValueError('备份没有可恢复的配置')
+    return manifest, restored
+
+
+def system_command(*args):
+    subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def schedule(op):
+    # Give Studio time to deliver the HTTP response before its unit goes down.
+    system_command('systemd-run', '--unit=microduck-web-maintenance', '--collect', '--on-active=4s', HELPER, op)
+
+
+def restore(files):
+    require_off()
+    backup = Path(tempfile.mkdtemp(prefix='microduck-import-', dir=BACKUPS))
+    originals = {}
+    recovery = {}
+    for name in files:
+        path = CONFIG[name]
+        try:
+            raw, info = read_regular(path, CONFIG_LIMIT)
+        except FileNotFoundError:
+            originals[name] = None
+            recovery[name] = None
+            continue
+        # Retain the real owner and mode, including for manual recovery from the private backup.
+        atomic(backup / name, raw, stat.S_IMODE(info.st_mode), (info.st_uid, info.st_gid))
+        originals[name] = info
+        recovery[name] = {'sha256': hashlib.sha256(raw).hexdigest(), 'uid': info.st_uid,
+                          'gid': info.st_gid, 'mode': stat.S_IMODE(info.st_mode)}
+    backup_info = backup.stat()
+    atomic(backup / 'manifest.json', json.dumps({'originals': recovery}).encode(), 0o600,
+           (backup_info.st_uid, backup_info.st_gid))
+    sync_dir(BACKUPS)
+
+    attempted = []
+    try:
+        require_off()
+        for name, data in files.items():
+            path = CONFIG[name]
+            info = originals[name]
+            if info is None:
+                private = STATE in path.parents or path.parent == Path('/var/lib/padd')
+                owner_info = path.parent.stat() if private else backup_info
+                owner = owner_info.st_uid, owner_info.st_gid
+                mode = 0o600 if private else 0o644
+            else:
+                mode = stat.S_IMODE(info.st_mode) & 0o777
+                owner = info.st_uid, info.st_gid
+            # Atomic replacement may already be visible if syncing the directory fails.
+            attempted.append(name)
+            atomic(path, data, mode, owner)
+        require_off()
+        if TOF in files:
+            system_command('systemctl', 'daemon-reload')
+        schedule('restart-tof-if-relaxed' if TOF in files else 'restart-if-relaxed')
+    except Exception:
+        errors = []
+        for name in reversed(attempted):
+            path = CONFIG[name]
+            try:
+                info = originals[name]
+                if info is None:
+                    path.unlink(missing_ok=True)
+                    if path.parent.exists():
+                        sync_dir(path.parent)
+                else:
+                    atomic(path, (backup / name).read_bytes(), stat.S_IMODE(info.st_mode), (info.st_uid, info.st_gid))
+            except OSError as exc:
+                errors.append(exc)
+        if TOF in attempted:
+            try:
+                system_command('systemctl', 'daemon-reload')
+            except (OSError, subprocess.SubprocessError) as exc:
+                errors.append(exc)
+        if errors:
+            raise ValueError(f'自动回滚未完成，请从 {backup} 检查并恢复配置') from None
+        raise
+    return {'ok': True, 'backup': str(backup), 'restored': len(files), 'reboot_required': CAMERA in files}
+
+
+def main():
+    if len(sys.argv) != 2:
+        raise ValueError('操作不正确')
+    op = sys.argv[1]
+    if op == 'export':
+        export()
+        return
+    if op in ('preview', 'restore'):
+        manifest, files = load(sys.stdin.buffer.read(MAX + 1))
+        if op == 'preview':
+            print(json.dumps({'ok': True, 'created': manifest.get('created'), 'hostname': manifest.get('hostname'),
+                              'files': list(files), 'reboot_required': CAMERA in files,
+                              'source_included': any(n.startswith('source/') for n in manifest['files'])}))
+        else:
+            with device_lock():
+                print(json.dumps(restore(files)))
+        return
+    if op == 'shutdown':
+        with device_lock():
+            rpc('robot.stop')
+            rpc('robot.relax')
+            deadline = time.monotonic() + 8
+            while not off():
+                if time.monotonic() >= deadline:
+                    raise ValueError('卸力未确认，尚未安排关机')
+                time.sleep(.1)
+            schedule('poweroff-if-relaxed')
+        print(json.dumps({'ok': True, 'scheduled': True}))
+        return
+    if op in ('poweroff-if-relaxed', 'restart-if-relaxed', 'restart-tof-if-relaxed'):
+        # Invoked by systemd only. The sudoers grant excludes these internal operations.
+        with device_lock():
+            if op == 'poweroff-if-relaxed':
+                os.sync()
+            require_off()
+            if op == 'poweroff-if-relaxed':
+                system_command('systemctl', '--no-block', 'poweroff')
+            else:
+                services = ['robotd.service', 'padd.service', 'microduck-studio.service']
+                if op == 'restart-tof-if-relaxed':
+                    services.append('tofd.service')
+                system_command('systemctl', '--no-block', 'restart', *services)
+        return
+    raise ValueError('操作不支持')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        message = str(error)[:300] if isinstance(error, ValueError) else '维护操作失败，请检查设备状态、备份格式或服务日志'
+        print(json.dumps({'ok': False, 'error': message}))
+        sys.exit(1)

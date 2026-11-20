@@ -13,6 +13,9 @@ import { BatteryCell } from './battery.js';
 import { BatterySettings } from './settings-battery.js';
 import { AiSettings } from './settings-ai.js';
 import { UpdateSettings } from './settings-updates.js';
+import { CertificateDownload } from './certificate-download.js';
+import { Maintenance } from './maintenance.js';
+import { ShutdownButton } from './shutdown-button.js';
 import { AccessGuide, AiSshEntry } from './settings-access.js';
 import { TuneSection, ModelSettings } from './tune.js';
 import { WifiCard, WifiSettings, DuckAddresses } from './wifi.js';
@@ -227,10 +230,12 @@ function EStop({ st, live, open }) {
       ${es.state === 'pending' ? '卸力中…' : '卸力'}<span class="kbd">空格</span></button></span>`;
 }
 
-function TopBar({ duck, st, live, age, open, hideEStop }) {
+function TopBar({ duck, st, live, age, open, hideEStop, imu }) {
   // 顶栏先说现在是什么模式（出厂标定模式 / 写完切运动模式），再带姿势；标定模式没有策略，别写成「调试中」。
   // 连续报启动阶段超过 30 秒（Studio 从这次连上算）：写「一直报启动中」（10-20 真机：旧 fork 的标定模式永远报 configuring_bus）
-  const postureText = st ? ({ starting: st.start_wait?.text || (st.starting_long ? '一直报启动中' : '启动中'), absent: '主程序没在跑', homing: '在站起来',
+  const calibrationText = live && imu?.job?.phase === 'verify' ? 'IMU 验证中'
+    : live && st?.posture === 'homing' && imu?.coarse_sampling?.hold_ready ? '站姿已停稳' : null;
+  const postureText = st ? (calibrationText || { starting: st.start_wait?.text || (st.starting_long ? '一直报启动中' : '启动中'), absent: '主程序没在跑', homing: '在站起来',
     servo_session: '调舵机中' }[st.posture] || WAS[st.posture] || '状态不明') : null;
   const modeText = !st ? '连接中'
     : st.mode === 'commissioning' ? (st.posture === 'commissioning' ? '标定模式' : `标定模式 · ${postureText}`)
@@ -247,6 +252,7 @@ function TopBar({ duck, st, live, age, open, hideEStop }) {
       ${st?.servo_session ? html`<span class="sv-badge">调舵机中</span>` : null}
       <span class="meta num">${live ? '' : `${Math.round(age / 1000)} 秒前 · `}${modeText}${typeof pct === 'number' ? ` · ${Math.round(pct)}%` : ''}</span>
     </div>
+    <${ShutdownButton} api=${api} />
     <span class=${hideEStop ? 'estop-hidden' : ''}><${EStop} st=${st} live=${live} open=${open} /></span>
   </header>`;
 }
@@ -760,10 +766,16 @@ async function refreshAccessSession() {
 function Settings({ st, tune }) {
   const [v, setV] = useState(loadStage());
   const pick = (x) => { setV(x); applyStage(x); try { localStorage.setItem('studio.stage', x); } catch { /* 隐私模式 */ } };
-  return html`<div style="display:flex;flex-direction:column;gap:16px;max-width:640px">
+  return html`<div class="studio-settings">
     <h1 style="margin:0;font-size:28px;font-weight:600">设置</h1>
     <${AiSshEntry} />
     <${UpdateSettings} api=${api} csrf=${csrf} />
+    <${Maintenance} api=${api} />
+    <details class="board device-certificate">
+      <summary>手机麦克风证书</summary>
+      <p>用手机麦克风之前，请下载本机证书并在手机上安装。<a href="/m#/more">查看 iPhone 和 Android 安装步骤</a></p>
+      <${CertificateDownload} />
+    </details>
     <${AiSettings} api=${api} />
     <div class="board" style="padding:16px 20px;display:flex;flex-wrap:wrap;gap:12px;align-items:center">
       <span style="font-size:15px;font-weight:600;flex:1">日志和诊断</span>
@@ -967,7 +979,7 @@ function Main({ duck }) {
     <${Nav} route=${route} padInView=${padInView} onSame=${onSame} />
     <main class="main">
       <${TopBar} duck=${duck} st=${st} live=${live} age=${age} open=${status === 'open'}
-        hideEStop=${route === '/servos' && sv?.state === 'open'} />
+        hideEStop=${route === '/servos' && sv?.state === 'open'} imu=${route === '/imu' ? imu : null} />
       <div class="sticky-bar" ref=${barRef}><${ServoBar} st=${st} onServos=${route === '/servos'} /></div>
       ${overview}${page}
     </main>

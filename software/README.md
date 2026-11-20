@@ -20,6 +20,10 @@
 
 独立的舵机测试、IMU 检查和步态分析入口见[工具导航](../tools/README.md)；电路板与固件入口见[硬件工程](../hardware/README.md)。
 
+## Orange Pi Zero 3W 移植
+
+[香橙派 Zero 3W（Allwinner A733）](orangepi-zero3w/)有独立的 R2 预览镜像，预装 Studio、只读主控和热点配网。使用这款板子请看[烧录、首次设密修正与配网](orangepi-zero3w/image/README.md)。贡献者已在 ARM64 环境验证 Studio，A733 实板烧卡首启和运动待验。
+
 ## HD1910 仿真训练
 
 **[`training/`](training/)** 包含完整 Python 训练工程：模型、LuwuDynamics 的 1910 M6 参数、

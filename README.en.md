@@ -6,16 +6,21 @@ A third-party full-robot replica project based on [Pollen Robotics' Microduck](h
 
 ## Download the image for your board
 
-Check the model printed on the board. **Radxa ZERO 3W** and **Radxa Cubie A7Z** use different images. Match the full board model to the release before flashing.
+Match the full model printed on the board before downloading. **Radxa ZERO 3W** and **Orange Pi Zero 3W (A733)** use different SD card images.
 
 | Board | Image download | First use |
 |---|---|---|
-| **Radxa ZERO 3W** | [ZERO 3W · 20261112 RC4 test image](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-zero3w-20261112-rc4) · [Previous stable image](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-20261027) | [ZERO 3W flashing and setup](software/image/烧录和第一次使用.md) |
-| **Radxa Cubie A7Z** | [Cubie A7Z preview image](https://github.com/Liangjin5437/microduck-replica/releases/tag/a7z-duck-image-20261109-preview1) | [A7Z flashing and setup](radxa-cubie-a7z/image/README.md) |
+| **Radxa ZERO 3W** | [ZERO 3W · 20261104 image](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-20261104) · [Previous stable image](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-20261027) | [ZERO 3W flashing and setup](software/image/烧录和第一次使用.md) |
+| **Radxa Cubie A7Z** | [A7Z preview1 image](https://github.com/Liangjin5437/microduck-replica/releases/tag/a7z-duck-image-20261109-preview1) | [Flashing and setup](radxa-cubie-a7z/image/README.md) · [IMX219 camera support in source, after preview1](radxa-cubie-a7z/control/camera/README.md) |
+| **Orange Pi Zero 3W (Allwinner A733)** | [Orange Pi R2 preview image](https://github.com/Liangjin5437/microduck-replica/releases/tag/orangepi-zero3w-20261112-r2) | [First boot and Studio password setup](software/orangepi-zero3w/image/README.md) · Controller starts read-only. SD card boot on the A733 board awaits verification. |
+
+**Already using a Radxa ZERO 3W 1104 card?** Run the preparation tool once and reboot. Open **Studio → Settings → Software Update** and select **Update now** when a new version appears. The duck downloads and verifies the package. Reconnect to check the result. [Download the preparation tool](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-software-v2026.11.20) · [One-time setup guide (Chinese)](https://github.com/fanhao375/microduck-replica/blob/microduck-software-v2026.11.20/software/updater/stock1104/README.md)
 
 **The Feetech HD-1910 build has passed real hardware validation: standing, walking, a forward roll and standing back up.** Our main build uses **15 Feetech HD-1910 servos**. We provide a **ready-to-flash system image** and the **Microduck Studio web console** for Wi-Fi setup, calibration, and remote control from a phone or computer browser.
 
 **The first-use workflow has also been completed on real hardware:** flash the image → hotspot and Wi-Fi setup → servo and IMU calibration → gamepad pairing and e-stop test → stand and walk. [Real hardware validation records](docs/update-history.en.md#latest)
+
+**Wiring diagram (3D, rotatable, step-by-step highlight):** [open online](https://fanhao375.github.io/microduck-replica/wiring3d/). Battery → banana board → HUB → legs / head / IMU, plus the camera, ToF, speaker and every HAT connector, so you can see exactly where each wire goes.
 
 ## The ducks in action
 
@@ -46,6 +51,7 @@ The GIFs are silent previews; the MP4 files include the complete video and audio
 
 - **Feetech HD-1910 + Radxa Zero 3W**: use this repository's system image and Studio web console.
 - **Feetech HD-1910 + Radxa Cubie A7Z (preview)**: [port sources and notes](radxa-cubie-a7z/README.md) · [download the image for your board](#download-the-image-for-your-board). See the release for the preview's hardware validation status.
+- **Orange Pi Zero 3W (A733)**: [community port](software/orangepi-zero3w/README.md) with Wi-Fi provisioning and Studio. Motion still needs hardware validation.
 - **Dynamixel XL330**: matching CAD and assembly resources are available; use compatible runtime software.
 
 [Choose print files and shopping list](#print-files-and-shopping-list) · [Detailed servo comparison](docs/actuator-selection.en.md)
@@ -104,6 +110,14 @@ Choose print resources for your servo version, then prepare the matching purchas
 
 Mating parts from the two servo versions are not interchangeable. File versions and update dates are maintained in the respective CAD sections. This shopping list follows the Feetech build; XL330 servos and associated electronics need separate checks.
 
+**How it is wired:** **[3D wiring diagram, live preview](https://fanhao375.github.io/microduck-replica/wiring3d/)** (the picture below opens it too). Rotate and zoom it, and step through every wire (battery → banana board → HUB → legs / head / IMU, plus the camera, ToF, speaker and each HAT connector).
+
+Preview address: <https://fanhao375.github.io/microduck-replica/wiring3d/>
+
+<div align="center">
+  <a href="https://fanhao375.github.io/microduck-replica/wiring3d/"><img src="docs/wiring3d/preview.png" alt="Microduck 3D wiring diagram" width="420"></a>
+</div>
+
 ---
 
 ## Where things stand
@@ -114,9 +128,21 @@ As of **2026-10-25**, **the Feetech replica, first-use workflow and robot motion
 
 ## 💻 Software · system image and Microduck Studio
 
-**Replica image 20261027: web software updates and local Mandarin posture commands.** Settings can check, download or upload signed software packages, with rollback on failed installation. Tap R3 to toggle listening for “sit down” and “stand up”; the Mandarin model is included and needs no cloud account. Web motion recording/playback, lively mode and model management are retained. Existing cards need one SSH bootstrap; routine software updates then use the browser without reflashing.
+<!-- Keep one row each for the current software and disk image. Put full release notes in the history, newest first. -->
+| Date | ZERO 3W release | When to use it |
+|---|---|---|
+| 2026-11-20 | [Stable software 2026.11.20](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-software-v2026.11.20) | Update Studio on an existing 1104 card for mobile control, offline voice commands, and servo and IMU diagnostics. |
+| 2026-11-04 | [Disk image 20261104](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-20261104) | Flash a new SD card. Includes standing IMU calibration and hotspot recovery after a Wi-Fi change. [Image notes (Chinese)](docs/更新说明-20261104.md) |
 
-The robot runtime, gait models and bus-ID-200 IMU autodetection are unchanged from 20261023c. Software, signed transactions, browser flows and read-only image checks passed; physical first boot, existing-card upgrades/rollback and live acoustics still need acceptance. Music-driven head/body motion remains unresolved, and spoken AI dialogue is not connected. [Image and checksums](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-replica-image-20261027) · [Software package](https://github.com/fanhao375/microduck-replica/releases/tag/microduck-software-v2026.10.27) · [Update and voice guide](docs/软件更新与语音使用说明-20261027.md) · [Verification scope](docs/superpowers/verification/2026-10-27-web-updates.md)
+<details>
+<summary>Earlier software releases</summary>
+
+- **2026-10-31** · [Mouth 34 and yaw 32 diagram correction](docs/软件修订-20261031-r1.md) · [Gamepad remapping, camera zoom and SSH guide](docs/功能软件升级-20261030.md) (Chinese)
+- **2026-10-30** · [IMU diagnostics with no servos connected](docs/仅接IMU的独立诊断与软件更新-20261030.md) (Chinese)
+
+[Full update history, downloads and verification notes](docs/update-history.en.md#software-and-image-releases)
+
+</details>
 
 <p align="center"><a href="software/studio/README.md"><img src="assets/studio-overview-20261025-demo.jpg" alt="Current Microduck Studio interface with simulated device readings" width="920"></a><br><sub>Studio interface demonstration with simulated device readings</sub></p>
 
@@ -215,7 +241,8 @@ This repo is not one person's work. Merged code and bench-verified findings are 
 | [@yoyojacky](https://github.com/yoyojacky) | **A Rust test tool for Feetech servos** ([PR #27](https://github.com/fanhao375/microduck-replica/pull/27), merged). A minimal STS/SCS protocol implementation of his own (framing, checksum, ping, register read/write, status parsing). The CLI scans the bus with a progress bar, reads status, moves a servo to a position, and runs single or batch tests that report position error, peak current, peak load, voltage and temperature, with a PASS/FAIL verdict — one command gives you a bench acceptance table → [`tools/sts3215Servo_testtool/`](tools/sts3215Servo_testtool/) |
 | [@Abo1ish](https://github.com/Abo1ish) | **IMU board firmware + attitude view in the debug console** ([PR #32](https://github.com/fanhao375/microduck-replica/pull/32), merged). A base STM32G031 firmware for the imu_to_dxl board that Pollen never open-sourced, verified on real hardware, with host-side tests and a [`VALIDATION.md`](hardware/imu_to_dxl/firmware/VALIDATION.md) that is clear about its limits → [`hardware/imu_to_dxl/firmware/`](hardware/imu_to_dxl/firmware/). He also streams the IMU attitude over J-Link into the web debug console, so the 3D duck's body turns with the real board (`--imu-jlink`, or `--imu-demo` with no hardware) → [`tools/servo-web/`](tools/servo-web/) |
 | [@yansis2026](https://github.com/yansis2026) | **Mobile console and offline voice control** ([PR #52](https://github.com/fanhao375/microduck-replica/pull/52), merged). The `/m` console provides a phone gamepad, model management, and a camera view. The phone sends microphone audio to the duck over HTTPS for onboard Vosk recognition, which works offline over the duck's hotspot. The contributor tested the workflow on their own duck. The merged revision passed software regression tests and awaits another hardware run. See the [mobile and offline guide](software/studio/deploy/OFFLINE.md). |
-| [@Liangjin5437](https://github.com/Liangjin5437) | **Radxa Cubie A7Z port and preview image** ([PR #54](https://github.com/fanhao375/microduck-replica/pull/54), merged). Adds hotspot provisioning, UART and grouped bus reads, Studio support, thermal management, and image build tools for Feetech HD-1910 servos and a bus IMU. The contributor tested the port on their own A7Z duck. The available preview image predates the merge fixes. The updated image still needs to be built and tested on hardware. See the [A7Z port and download guide](radxa-cubie-a7z/README.md). |
+| [@Liangjin5437](https://github.com/Liangjin5437) | **Two board ports.** Cubie A7Z provisioning, grouped UART reads for Feetech HD-1910 and bus IMU, Studio, thermal control and image tooling ([#54](https://github.com/fanhao375/microduck-replica/pull/54)), followed by a [4:3 IMX219 preview](radxa-cubie-a7z/control/camera/README.md) tested on the contributor’s A7Z ([#58](https://github.com/fanhao375/microduck-replica/pull/58)). [Orange Pi Zero 3W (A733)](software/orangepi-zero3w/README.md) adds a preinstalled Studio, first-use password setup and a read-only controller ([#55](https://github.com/fanhao375/microduck-replica/pull/55)). |
+| [@wwwgrass](https://github.com/wwwgrass) | **Studio voice, calibration and device maintenance.** Added [Doubao speech replies and browser audio previews (#61)](https://github.com/fanhao375/microduck-replica/pull/61), [mobile AI chat with head and beak movement and camera input (#62)](https://github.com/fanhao375/microduck-replica/pull/62), and [IMU mounting checks and saving in the HOME stance (#63)](https://github.com/fanhao375/microduck-replica/pull/63) with a compatible driver. Studio also gained [configuration backup and restore, safe shutdown and phone certificate download (#64)](https://github.com/fanhao375/microduck-replica/pull/64). The optional [IMX219 low-light exposure patch (#65)](https://github.com/fanhao375/microduck-replica/pull/65) has been compiled. Low-light image quality still needs a hardware check. |
 | A member of the WeChat group | **Boot recipe for the Radxa Zero 3W V1.12J.** On this batch (WiFi changed to AIC8800DS2), swapping in Radxa's bootloader is not enough. He found by testing that the device tree has to come from Radxa too: **B1 bootloader + B1 DTB + Armbian 6.1.115 kernel + Trixie userland**, and got it booting → written up in the [pitfalls log](踩坑记录.md#软件) and the [image guide](tools/radxa/镜像使用说明.md) (both Chinese) |
 
 ---
