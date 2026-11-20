@@ -11,6 +11,9 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import sys
+
+from serial_config import DEFAULT_SERVO_PORT, SERVO_PORTS, validate_port, deploy_serial_source
 
 HERE = Path(__file__).resolve().parent
 BOARD = HERE.parent
@@ -134,7 +137,13 @@ def unpack_studio(archive, root):
                 raise ValueError('unsupported Studio archive entry: ' + member.name)
 
 
+def studio_unit(servo_port=DEFAULT_SERVO_PORT):
+    validate_port(servo_port)
+    return STUDIO_UNIT.replace(" --camera-socket none\n", " --camera-socket none --servo-port " + servo_port + "\n")
+
+
 def prepare(args):
+    servo_port = validate_port(getattr(args, 'servo_port', DEFAULT_SERVO_PORT))
     if args.output.exists() or args.output.is_symlink():
         raise ValueError('output exists; choose a new directory')
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -142,10 +151,11 @@ def prepare(args):
     root = work / 'root'
     try:
         # The runtime builder checks upstream and A7Z binary hashes independently.
-        subprocess.run(['python3', str(HERE / 'prepare_runtime.py'), '--output', str(root)], check=True)
+        subprocess.run([sys.executable, str(HERE / 'prepare_runtime.py'), '--output', str(root),
+                        '--servo-port', servo_port], check=True)
         unpack_studio(args.studio_archive, root)
         rebuilt = work / 'studio'
-        subprocess.run(['python3', str(BOARD / 'studio/console-integration/prepare_console.py'),
+        subprocess.run([sys.executable, str(BOARD / 'studio/console-integration/prepare_console.py'),
                         str(args.studio_source), '--output', str(rebuilt)], check=True,
                        capture_output=True, text=True)
         app = root / 'opt/microduck-studio/app'
@@ -157,6 +167,10 @@ def prepare(args):
         for relative, expected in BACKEND.items():
             if digest(app / relative) != expected:
                 raise ValueError('A7Z Studio backend mismatch: ' + relative)
+        # Preserve the reviewed source export; customize only the staged image.
+        for relative, kind in (('deploy/microduck-helper', 'helper'), ('deploy/native_update.py', 'updater')):
+            target = app / relative
+            target.write_text(deploy_serial_source(target.read_text(), servo_port, kind))
         for path in ('/boot/extlinux/extlinux.conf', '/etc/kernel/cmdline'):
             text = read_rootfs(args.debugfs, args.rootfs, path)
             if 'console=ttyAS0' not in text or 'earlycon' not in text:
@@ -166,7 +180,7 @@ def prepare(args):
         link(root, 'var/lib/dbus/machine-id', '/etc/machine-id')
         write(root, 'usr/local/lib/cubie-duck/firstboot.py', (HERE / 'firstboot.py').read_text(), 0o755)
         write(root, 'etc/systemd/system/cubie-duck-firstboot.service', FIRSTBOOT)
-        write(root, 'etc/systemd/system/microduck-studio.service', STUDIO_UNIT)
+        write(root, 'etc/systemd/system/microduck-studio.service', studio_unit(servo_port))
         # Wait for stock user creation and partition growth to finish before setup.
         write(root, 'etc/systemd/system/rsetup.service.d/10-cubie-duck.conf',
               '[Service]\nType=oneshot\nRemainAfterExit=yes\nTimeoutStartSec=300\n')
@@ -198,6 +212,7 @@ def prepare(args):
               'radxa ALL=(root) NOPASSWD: /usr/local/sbin/microduck-helper\n', 0o440)
         release = {'release': args.release, 'board': 'radxa,cubie-a7z',
                    'studio_release': '20261109-console1', 'boot_mode': 'commissioning',
+                   'servo_port': servo_port,
                    'network_setup': 'qiqilong_<unique suffix> / http://10.42.0.1/',
                    'studio_url': 'http://cubie-<unique suffix>.local:8000/',
                    'physical_validation': 'pending: board unreachable during image build',
@@ -228,6 +243,7 @@ def main():
     parser.add_argument('--studio-source', type=Path, default=SOURCE)
     parser.add_argument('--debugfs', type=Path, default=Path('/opt/homebrew/opt/e2fsprogs/sbin/debugfs'))
     parser.add_argument('--release', default='20261109-a7z-duck-preview1')
+    parser.add_argument('--servo-port', choices=SERVO_PORTS, default=DEFAULT_SERVO_PORT)
     args = parser.parse_args()
     args.output = args.output.absolute()
     print(json.dumps(prepare(args), ensure_ascii=False, indent=2))

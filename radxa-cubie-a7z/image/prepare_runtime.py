@@ -18,6 +18,8 @@ import tarfile
 import tempfile
 import tomllib
 
+from serial_config import DEFAULT_SERVO_PORT, SERVO_PORTS, validate_port, bus_port_config
+
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
@@ -140,15 +142,17 @@ def write(root, name, text, mode=0o644):
     path.chmod(mode)
 
 
-def configure_new_unit(root):
+def configure_new_unit(root, servo_port=DEFAULT_SERVO_PORT):
+    validate_port(servo_port)
     runtime = root / RUNTIME
     profile = (runtime / "robotd-profile.toml").read_text(encoding="utf-8")
+    profile = bus_port_config(profile, servo_port)
     settings = tomllib.loads(profile)
     if settings["policy"]["enabled"] is not True:
         raise ValueError("expected model-loading policy profile")
     for slot, ident in CAPABILITIES.items():
         policy_slot = "sitstand" if slot == "sit_stand" else slot
-        expected_path = "/" + str(RUNTIME / "models" / ident / "policy.onnx")
+        expected_path = "/" + (RUNTIME / "models" / ident / "policy.onnx").as_posix()
         if settings["policy"].get(policy_slot) != expected_path:
             raise ValueError("unexpected model slot: " + slot)
         model = runtime / "models" / ident / "policy.onnx"
@@ -178,12 +182,16 @@ def configure_new_unit(root):
         "source": "new-unit-uncommissioned-template", "motion_enabled": False,
         "note": "No previous assembly calibration or IMU authorization is included."
     }, indent=2) + "\n")
-    write(root, "etc/systemd/system/robotd.service", UNIT)
+    unit = UNIT
+    if servo_port != "/dev/ttyS2":
+        unit = unit.replace("ExecStartPre=/usr/bin/python3 /usr/local/sbin/cubie-servo-uart.py\n", "")
+    write(root, "etc/systemd/system/robotd.service", unit)
     write(root, "etc/systemd/system/robotd.service.d/zzzz-zz-microduck-commissioning.conf",
           COMMISSIONING)
 
 
-def stage(archive, robotd, output):
+def stage(archive, robotd, output, servo_port=DEFAULT_SERVO_PORT):
+    validate_port(servo_port)
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
         raise ValueError("output already exists; choose a new directory: " + str(output))
@@ -202,7 +210,7 @@ def stage(archive, robotd, output):
         shutil.copyfile(robotd, temporary / RUNTIME / "robotd")
         (temporary / RUNTIME / "robotd").chmod(0o755)
         write(temporary, "usr/local/sbin/cubie-servo-uart.py", uart.read_text(), 0o755)
-        configure_new_unit(temporary)
+        configure_new_unit(temporary, servo_port)
         # The archive's checksums describe its original files, not this modified
         # overlay. Retain them as provenance; publish fresh final checksums below.
         (temporary / RUNTIME / "SHA256SUMS").rename(temporary / RUNTIME / "UPSTREAM-SHA256SUMS")
@@ -216,6 +224,7 @@ def stage(archive, robotd, output):
             "robotd_sha256": ROBOTD_SHA256,
             "target": "aarch64-linux-gnu-glibc2.31",
             "boot_mode": "commissioning", "autostart_motion": False,
+            "servo_port": servo_port,
             "calibration": "new-unit-uncommissioned",
             "capabilities": CAPABILITIES,
             "audio": {"device": "default", "bank": "/var/lib/robot/sounds",
@@ -240,8 +249,9 @@ def main():
     parser.add_argument("--robotd", type=Path, default=DEFAULT_ROBOTD)
     parser.add_argument("--output", type=Path, required=True,
                         help="new filesystem overlay directory; never overwrites an existing path")
+    parser.add_argument("--servo-port", choices=SERVO_PORTS, default=DEFAULT_SERVO_PORT)
     args = parser.parse_args()
-    report = stage(args.archive, args.robotd, args.output)
+    report = stage(args.archive, args.robotd, args.output, args.servo_port)
     print(json.dumps({"output": str(args.output.absolute()), "files": len(report["files"]),
                       "boot_mode": report["boot_mode"], "capabilities": report["capabilities"]},
                      ensure_ascii=False, indent=2))

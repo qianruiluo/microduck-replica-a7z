@@ -106,7 +106,9 @@ class ReviewedPayloadChecks(unittest.TestCase):
             self.assertIn(" --commissioning\n", dropin.read_text())
             unit = (output / "etc/systemd/system/robotd.service").read_text()
             self.assertIn("/var/lib/cubie-duck/firstboot.done", unit)
-            self.assertIn("cubie-servo-uart.py", unit)
+            self.assertNotIn("ExecStartPre=", unit)
+            self.assertEqual(config["bus"]["port"], "/dev/ttyACM0")
+            self.assertEqual(report["servo_port"], "/dev/ttyACM0")
             self.assertNotIn("uart-service.py", unit)
             for name, digest in report["files"].items():
                 self.assertEqual(runtime.sha256(output / name), digest, name)

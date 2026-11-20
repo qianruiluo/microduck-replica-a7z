@@ -34,9 +34,17 @@ artifacts/cubie-a7z-duck-20261109-preview1.img.xz.manifest.json
 
 实体手柄、Studio 内的 configd 配网、相机、ToF、持续语音识别以及关节跟踪后端没有在此版本启用。首次联网使用独立配网页；网页虚拟手柄不依赖实体手柄服务。此前安装有实物迈步反馈，也有尚未解决的总线偶发读取失败记录；本次打包没有修复该根因。持续步态、捡取和翻滚仍待现场验证。
 
+## 2026-11-20：新构建默认 USB URT-2
+
+构建参数 `--servo-port` 贯穿 `create_image.py`、`prepare_image.py` 和 `prepare_runtime.py`，默认 `/dev/ttyACM0`，也支持 `/dev/ttyS2`。会同步生成 robotd 主/保存配置、Studio 启动参数及总线接管助手的串口；USB 镜像不运行板载 UART 的寄存器初始化前置命令。生成镜像内的通用升级脚本不再用固定的 `--port /dev/ttyS2` 覆盖设备配置。
+
+镜像清单记录 `servo_port`。不生成旧设备的 `servo-session.json`，新装机仍为未完成标定的 commissioning 状态。历史 preview1 镜像和现有设备不因源码修改自动改变；旧设备的会话修正见 [USB URT-2 迁移](../studio/USB-URT2.md)。这些离线修改尚未经过完整新镜像构建或实机启动验收。
+
+更新包与镜像的具体命令、依赖和范围见 [构建与更新指南](../BUILD-AND-UPDATE.md)。
+
 ## 维护者重建
 
-构建需要下方列出的固定外部输入；普通源码检出不包含完整依赖，不能直接一键重建。脚本保留原构建目录布局的默认值，维护者须准备匹配版本、摘要和目录位置的输入，或显式配置对应脚本的输入参数；`create_image.py` 入口目前只提供 `--base`、`--output`、`--release`。
+构建需要下方列出的固定外部输入；普通源码检出不包含完整依赖，不能直接一键重建。脚本保留原构建目录布局的默认值，维护者须准备匹配版本、摘要和目录位置的输入，或显式配置对应脚本的输入参数；`create_image.py` 提供 `--base`、`--output`、`--release`、`--servo-port`；当前新构建默认使用 `/dev/ttyACM0`，HAT 接法需显式传入 `--servo-port /dev/ttyS2`。
 
 在本目录执行；使用全新输出路径，构建程序拒绝覆盖已有产物：
 
@@ -44,7 +52,8 @@ artifacts/cubie-a7z-duck-20261109-preview1.img.xz.manifest.json
 python3 create_image.py \
   --base ../os/radxa-a733_bullseye_kde_r6.output_512.img.xz \
   --output artifacts/cubie-a7z-duck-local-rebuild.img.xz \
-  --release a7z-duck-local-rebuild
+  --release a7z-duck-local-rebuild \
+  --servo-port /dev/ttyACM0
 ```
 
 需要 Python 3.13（本次使用 3.13.6）、`xz`、`debugfs` 和 `e2fsck`；保持足够临时磁盘空间容纳解压镜像、根分区副本和压缩输出。构建在本机文件副本上完成，不连接板卡、不写物理磁盘。

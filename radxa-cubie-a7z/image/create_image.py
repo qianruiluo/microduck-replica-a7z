@@ -9,9 +9,11 @@ import tempfile
 
 import build_image
 import prepare_image
+from serial_config import DEFAULT_SERVO_PORT, SERVO_PORTS, validate_port
 
 
 def create(args):
+    servo_port = validate_port(getattr(args, 'servo_port', DEFAULT_SERVO_PORT))
     args.output = args.output.absolute()
     if args.output.exists():
         raise ValueError('output exists; choose a new release filename')
@@ -34,12 +36,13 @@ def create(args):
         preparation = argparse.Namespace(
             output=overlay, rootfs=rootfs, studio_archive=prepare_image.STUDIO,
             studio_source=prepare_image.SOURCE,
-            debugfs=Path(build_image.tool('debugfs')), release=args.release)
+            debugfs=Path(build_image.tool('debugfs')), release=args.release, servo_port=servo_port)
         prepare_image.prepare(preparation)
         removals = (prepare_image.HERE / 'sanitize-files.txt').read_text().splitlines()
         manifest = build_image.build(base, overlay, args.output, removals=removals)
         # The intermediate raw image may have a generic name; retain the supplied
         # compressed base's identity as well for a subsequent release rebuild.
+        manifest['servo_port'] = servo_port
         manifest['source_base'] = {'file': args.base.name,
                                    'sha256': build_image.digest(args.base)}
         Path(str(args.output) + '.manifest.json').write_text(
@@ -52,6 +55,7 @@ def main():
     parser.add_argument('--base', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--release', default='20261109-a7z-duck-preview1')
+    parser.add_argument('--servo-port', choices=SERVO_PORTS, default=DEFAULT_SERVO_PORT)
     args = parser.parse_args()
     print(json.dumps(create(args), indent=2))
 
